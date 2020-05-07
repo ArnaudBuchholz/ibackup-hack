@@ -40,23 +40,35 @@ async function main () {
   // })
   // console.log(response)
 
-  log(serve({
-    port: 8080,
-    mappings: [{
-      match: "^/$",
-      file: join(__dirname, 'index.html')
-    }, {
-      match: "^/(.*)",
-      url: `${baseUrl}/$1`,
-      'forward-request': ({ request: { method, url, headers }}) => {
-        console.log('before', headers)
-        headers.referer = `${baseUrl}/pages/loading.html`,
-        delete headers.cookie
-        Object.keys(headers).forEach(name => name.startsWith('sec-') ? delete headers[name] : 0)
-        console.log('after', headers)
-      }
-    }]
-  }), true)
+  // log(serve({
+  //   port: 8080,
+  //   mappings: [{
+  //     match: "^/$",
+  //     file: join(__dirname, 'index.html')
+  //   }, {
+  //     match: "^/(.*)",
+  //     url: `${baseUrl}/$1`,
+  //     'forward-request': ({ request: { method, url, headers }}) => {
+  //       console.log('before', headers)
+  //       headers.referer = `${baseUrl}/pages/loading.html`,
+  //       delete headers.cookie
+  //       Object.keys(headers).forEach(name => name.startsWith('sec-') ? delete headers[name] : 0)
+  //       console.log('after', headers)
+  //     }
+  //   }]
+  // }), true)
+
+  // Import swat-proxy.
+  const swat_proxy = require('swat-proxy')
+
+  swat_proxy.proxy(`${baseUrl}/pages/about.html`, {
+    selector: 'body',
+    manipulation: swat_proxy.Manipulations.APPEND,
+    content: '<script> alert ("Hello from swat-proxy!"); </script>'
+  });
+
+  // Start the proxy server.
+  swat_proxy.start()
 }
 
 main()
