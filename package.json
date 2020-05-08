@@ -19,7 +19,6 @@
   "dependencies": {
     "colors": "^1.4.0",
     "gpf-js": "^1.0.0",
-    "reserve": "^1.7.1",
-    "swat-proxy": "^1.1.0"
+    "reserve": "^1.7.1"
   }
 }
