@@ -5,6 +5,8 @@ const { createWriteStream, mkdir, readdir } = require('fs')
 const { dirname, join } = require('path')
 const { promisify } = require('util')
 const { log, serve } = require('reserve')
+const zlib = require('zlib')
+const { pipeline } = require('stream')
 
 const readdirAsync = promisify(readdir)
 const mkdirAsync = promisify(mkdir)
@@ -38,22 +40,46 @@ async function main () {
           const cachePath = join(cacheBasePath, '.' + request.url)
           const cacheFolder = dirname(cachePath)
           await mkdirAsync(cacheFolder, { recursive : true })
-          const out = createWriteStream(cachePath)
-          const _writeHead = response.writeHead
+          const { end, write, writeHead } = response
           response.writeHead = function (status, headers) {
-            console.log(arguments)
-            _writeHead.apply(response, arguments)
-          }
-          const hook = method => {
-            const nativeImpl = response[method]
-            response[method] = (data, encoding, callback) => {
-              out[method](data, encoding, () => {
-                nativeImpl.call(response, data, encoding, callback)
-              })
+            if (status === 200) {
+              const file = createWriteStream(cachePath)
+              let out
+              if (headers['content-encoding'] === 'gzip') {
+                out = zlib.createGunzip()
+              } else {
+                out = file
+              }
+              response.write = function (data, encoding) {
+                console.log('write', data, encoding)
+                out.write(data, encoding, () => {
+                  write.apply(response, arguments)
+                })
+              }
+              response.end = function (data, encoding) {
+                console.log('end', data, encoding)
+                if (!data) {
+                  if (out !== file) {
+                    pipeline(out, file, () => {
+                      end.apply(response, arguments)
+                    })
+                  } else {
+                    end.apply(response, arguments)
+                  }
+                }
+                out.write(data, encoding, () => {
+                  if (out !== file) {
+                    pipeline(out, file, () => {
+                      end.apply(response, arguments)
+                    })
+                  } else {
+                    end.apply(response, arguments)
+                  }
+                })
+              }
             }
+            writeHead.apply(response, arguments)
           }
-          hook('write')
-          hook('end')
         }
       }
     }, {
