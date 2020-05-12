@@ -41,41 +41,67 @@ async function main () {
           const cacheFolder = dirname(cachePath)
           await mkdirAsync(cacheFolder, { recursive : true })
           const { end, write, writeHead } = response
+          let count = 0
           response.writeHead = function (status, headers) {
+
+            console.log(request.url, 'writeHead')
             if (status === 200) {
               const file = createWriteStream(cachePath)
               let out
-              if (headers['content-encoding'] === 'gzip') {
-                out = zlib.createGunzip()
-              } else {
+            //   // if (false && headers['content-encoding'] === 'gzip') {
+            //   //   out = zlib.createGunzip()
+            //   // } else {
                 out = file
-              }
-              response.write = function (data, encoding) {
-                console.log('write', data, encoding)
+            //   // }
+              let waitForDrain = false
+              response.write = (data, encoding, callback) => {
+                const myCount = ++count
+                console.log(request.url, 'write >> ', myCount, data.length, !!callback)
                 out.write(data, encoding, () => {
-                  write.apply(response, arguments)
-                })
-              }
-              response.end = function (data, encoding) {
-                console.log('end', data, encoding)
-                if (!data) {
-                  if (out !== file) {
-                    pipeline(out, file, () => {
-                      end.apply(response, arguments)
-                    })
-                  } else {
-                    end.apply(response, arguments)
+                  const ready = write.call(response, data, encoding, function () {
+                    console.log(request.url, 'write << ', myCount, data.length)
+                    if (callback) {
+                      callback.apply(this, arguments)
+                    }
+                  })
+                  if (ready) {
+                    setTimeout(() => {
+                      waitForDrain = false
+                      response.emit('drain')
+                    }, 0)
                   }
+                })
+                waitForDrain = true
+                return false
+              }
+              response.end = (data, encoding, callback) => {
+                const myCount = ++count
+                console.log(request.url, 'end', myCount, (data || []).length, !!callback)
+                if (waitForDrain) {
+                  response.on('drain', () => {
+                    end.apply(response, arguments)
+                  })
+                } else {
+                  end.apply(response, arguments)
                 }
-                out.write(data, encoding, () => {
-                  if (out !== file) {
-                    pipeline(out, file, () => {
-                      end.apply(response, arguments)
-                    })
-                  } else {
-                    end.apply(response, arguments)
-                  }
-                })
+            //     // if (!data) {
+            //     //   if (out !== file) {
+            //     //     pipeline(out, file, () => {
+            //     //       end.apply(response, arguments)
+            //     //     })
+            //     //   } else {
+            //     //     end.apply(response, arguments)
+            //     //   }
+            //     // }
+            //     out.end(data, encoding, () => {
+            //       // if (out !== file) {
+            //       //   pipeline(out, file, () => {
+            //       //     end.apply(response, arguments)
+            //       //   })
+            //       // } else {
+            //         end.apply(response, arguments)
+            //       // }
+            //     })
               }
             }
             writeHead.apply(response, arguments)
