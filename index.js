@@ -54,7 +54,7 @@ async function main () {
                 out = file
             //   // }
               let waitForDrain = false
-              response.write = (data, encoding, callback) => {
+              response.write = function (data, encoding, callback) {
                 const myCount = ++count
                 console.log(request.url, 'write >> ', myCount, data.length, !!callback)
                 out.write(data, encoding, () => {
@@ -74,15 +74,22 @@ async function main () {
                 waitForDrain = true
                 return false
               }
-              response.end = (data, encoding, callback) => {
+              response.end = function (data, encoding, callback) {
+                const process = () => {
+                  console.log(request.url, 'end', myCount, 'process')
+                  try {
+                    end.apply(response, arguments)
+                  } catch (e) {
+                    console.error(e)
+                  }
+                }
                 const myCount = ++count
                 console.log(request.url, 'end', myCount, (data || []).length, !!callback)
                 if (waitForDrain) {
-                  response.on('drain', () => {
-                    end.apply(response, arguments)
-                  })
+                  console.log(request.url, 'end', myCount, 'waiting...')
+                  response.on('drain', process)
                 } else {
-                  end.apply(response, arguments)
+                  process()
                 }
             //     // if (!data) {
             //     //   if (out !== file) {
