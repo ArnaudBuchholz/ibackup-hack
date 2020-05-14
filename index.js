@@ -28,6 +28,59 @@ async function main () {
 
   log(serve({
     port: 8080,
+    handlers: {
+      url2: {
+        redirect: async ({ configuration, mapping, match, redirect: url, request, response }) => {
+
+          function protocol (url) {
+            if (url.startsWith('https')) {
+              return require('https')
+            }
+            return require('http')
+          }
+          
+          function unsecureCookies (headers) {
+            ['Set-Cookie', 'set-cookie'].forEach(name => {
+              if (headers[name]) {
+                headers[name] = headers[name].map(cookie => cookie.replace(/\s*secure;/i, ''))
+              }
+            })
+          }
+          
+          let done
+          let fail
+          const promise = new Promise((resolve, reject) => {
+            done = resolve
+            fail = reject
+          })
+          const { method, headers } = request
+          delete headers.host // Some websites rely on the host header
+          const options = {
+            method,
+            url,
+            headers
+          }
+          const context = {}
+          const redirectedRequest = protocol(options.url).request(options.url, options, async redirectedResponse => {
+            if (mapping['unsecure-cookies']) {
+              unsecureCookies(redirectedResponse.headers)
+            }
+            const { headers: responseHeaders } = redirectedResponse
+            response.writeHead(redirectedResponse.statusCode, responseHeaders)
+            response.on('finish', done)
+            redirectedResponse
+              .on('error', fail)
+              .pipe(response)
+          })
+          redirectedRequest.on('error', fail)
+          request
+            .on('data', chunk => redirectedRequest.write(chunk))
+            .on('error', fail)
+            .on('end', () => { redirectedRequest.end() })
+          return promise
+        }
+      }
+    },
     mappings: [{
     //   method: 'GET',
     //   match: /^(\/.*(?:js|css|svg|jpg))/,
@@ -48,11 +101,11 @@ async function main () {
             if (status === 200) {
               const file = createWriteStream(cachePath)
               let out
-            //   // if (false && headers['content-encoding'] === 'gzip') {
-            //   //   out = zlib.createGunzip()
-            //   // } else {
+              if (headers['content-encoding'] === 'gzip') {
+                out = zlib.createGunzip()
+              } else {
                 out = file
-            //   // }
+              }
               let waitForDrain = false
               response.write = function (data, encoding, callback) {
                 const myCount = ++count
@@ -77,6 +130,15 @@ async function main () {
               response.end = function (data, encoding, callback) {
                 const process = () => {
                   console.log(request.url, 'end', myCount, 'process')
+                  if (out !== file) {
+                    console.log(request.url, 'end', myCount, 'unzipping')
+                    pipeline(out, file, () => {
+                      out.close()
+                      file.close()
+                    })
+                  } else {
+                    out.close()
+                  }
                   try {
                     end.apply(response, arguments)
                   } catch (e) {
@@ -91,24 +153,6 @@ async function main () {
                 } else {
                   process()
                 }
-            //     // if (!data) {
-            //     //   if (out !== file) {
-            //     //     pipeline(out, file, () => {
-            //     //       end.apply(response, arguments)
-            //     //     })
-            //     //   } else {
-            //     //     end.apply(response, arguments)
-            //     //   }
-            //     // }
-            //     out.end(data, encoding, () => {
-            //       // if (out !== file) {
-            //       //   pipeline(out, file, () => {
-            //       //     end.apply(response, arguments)
-            //       //   })
-            //       // } else {
-            //         end.apply(response, arguments)
-            //       // }
-            //     })
               }
             }
             writeHead.apply(response, arguments)
@@ -117,7 +161,7 @@ async function main () {
       }
     }, {
       match: /^\/(.*)/,
-      url: 'http://facetheforce.today/$1'
+      url2: 'http://facetheforce.today/$1'
     }, {
       match: /http:\/\/127.0.0.1:(\d+)(\/.*)/,
       custom: async (request, response, port, path) => {
