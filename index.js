@@ -1,15 +1,18 @@
 'use strict'
 
 require('colors')
-const { createWriteStream, mkdir, readdir } = require('fs')
+const { createWriteStream, mkdir, readdir, readFile, writeFile, stat } = require('fs')
 const { dirname, join } = require('path')
 const { promisify } = require('util')
-const { log, serve } = require('reserve')
+const { capture, log, serve } = require('reserve')
 const zlib = require('zlib')
 const { pipeline } = require('stream')
 
-const readdirAsync = promisify(readdir)
 const mkdirAsync = promisify(mkdir)
+const readdirAsync = promisify(readdir)
+const readFileAsync = promisify(readFile)
+const writeFileAsync = promisify(writeFile)
+const statAsync = promisify(stat)
 
 async function detectPort () {
   const localStorage = join(process.env.LOCALAPPDATA, 'iBackup Viewer/cache/Local Storage')
@@ -17,6 +20,13 @@ async function detectPort () {
   const port = /http_127.0.0.1_(\d+)/.exec(files[0])[1]
   console.log('Port:'.gray, port.green)
   return port
+}
+
+function clean (path) {
+  if (/\?_=\d+$/.exec(path)) {
+    path = path.split('?_=')[0]
+  }
+  return path
 }
 
 async function main () {
@@ -28,157 +38,82 @@ async function main () {
 
   log(serve({
     port: 8080,
-    handlers: {
-      url2: {
-        redirect: async ({ configuration, mapping, match, redirect: url, request, response }) => {
-
-          function protocol (url) {
-            if (url.startsWith('https')) {
-              return require('https')
-            }
-            return require('http')
-          }
-          
-          function unsecureCookies (headers) {
-            ['Set-Cookie', 'set-cookie'].forEach(name => {
-              if (headers[name]) {
-                headers[name] = headers[name].map(cookie => cookie.replace(/\s*secure;/i, ''))
-              }
-            })
-          }
-          
-          let done
-          let fail
-          const promise = new Promise((resolve, reject) => {
-            done = resolve
-            fail = reject
-          })
-          const { method, headers } = request
-          delete headers.host // Some websites rely on the host header
-          const options = {
-            method,
-            url,
-            headers
-          }
-          const context = {}
-          const redirectedRequest = protocol(options.url).request(options.url, options, async redirectedResponse => {
-            if (mapping['unsecure-cookies']) {
-              unsecureCookies(redirectedResponse.headers)
-            }
-            const { headers: responseHeaders } = redirectedResponse
-            response.writeHead(redirectedResponse.statusCode, responseHeaders)
-            response.on('finish', done)
-            redirectedResponse
-              .on('error', fail)
-              .pipe(response)
-          })
-          redirectedRequest.on('error', fail)
-          request
-            .on('data', chunk => redirectedRequest.write(chunk))
-            .on('error', fail)
-            .on('end', () => { redirectedRequest.end() })
-          return promise
-        }
-      }
-    },
     mappings: [{
-    //   method: 'GET',
-    //   match: /^(\/.*(?:js|css|svg|jpg))/,
-    //   file: `${cacheBasePath}$1`,
-    //   'ignore-if-not-found': true
-    // }, {
       method: 'GET',
-      custom: async (request, response) => {
-        if (/\.(js|css|svg|jpg)$/.exec(request.url)) {
-          const cachePath = join(cacheBasePath, '.' + request.url)
-          const cacheFolder = dirname(cachePath)
-          await mkdirAsync(cacheFolder, { recursive : true })
-          const { end, write, writeHead } = response
-          let count = 0
-          response.writeHead = function (status, headers) {
-
-            console.log(request.url, 'writeHead')
-            if (status === 200) {
-              const file = createWriteStream(cachePath)
-              let out
-              if (headers['content-encoding'] === 'gzip') {
-                out = zlib.createGunzip()
-              } else {
-                out = file
-              }
-              let waitForDrain = false
-              response.write = function (data, encoding, callback) {
-                const myCount = ++count
-                console.log(request.url, 'write >> ', myCount, data.length, !!callback)
-                out.write(data, encoding, () => {
-                  const ready = write.call(response, data, encoding, function () {
-                    console.log(request.url, 'write << ', myCount, data.length)
-                    if (callback) {
-                      callback.apply(this, arguments)
-                    }
-                  })
-                  if (ready) {
-                    setTimeout(() => {
-                      waitForDrain = false
-                      response.emit('drain')
-                    }, 0)
-                  }
-                })
-                waitForDrain = true
-                return false
-              }
-              response.end = function (data, encoding, callback) {
-                const process = () => {
-                  console.log(request.url, 'end', myCount, 'process')
-                  if (out !== file) {
-                    console.log(request.url, 'end', myCount, 'unzipping')
-                    pipeline(out, file, () => {
-                      out.close()
-                      file.close()
-                    })
-                  } else {
-                    out.close()
-                  }
-                  try {
-                    end.apply(response, arguments)
-                  } catch (e) {
-                    console.error(e)
-                  }
-                }
-                const myCount = ++count
-                console.log(request.url, 'end', myCount, (data || []).length, !!callback)
-                if (waitForDrain) {
-                  console.log(request.url, 'end', myCount, 'waiting...')
-                  response.on('drain', process)
-                } else {
-                  process()
-                }
-              }
-            }
-            writeHead.apply(response, arguments)
-          }
-        }
-      }
-    }, {
-      match: /^\/(.*)/,
-      url2: 'http://facetheforce.today/$1'
+      match: /^local:(.*)/,
+      file: `${cacheBasePath}$1`
     }, {
       match: /http:\/\/127.0.0.1:(\d+)(\/.*)/,
       custom: async (request, response, port, path) => {
         if (!iBackupPort) {
           iBackupPort = await detectPort()
         }
-        if (port === iBackupPort && path === '/app?_cmd=get-license') {
+        if (port !== iBackupPort) {
+          return
+        }
+        if (path === '/app?_cmd=get-license') {
           response.writeHead(200)
           response.end('{"result":true}')
+          return
+        }
+        if (request.method === 'GET' && /(\w+)\?bkid=\d+/.exec(path)) {
+          const match = /(\w+)\?bkid=(\d+)(?:&_cmd=(\w+)&(?:id=(\d+)|domain=AppDomainGroup-group.com.apple.notes&path=(.*)))?(?:&password=)?$/.exec(path)
+          if (match) {
+            const data = match[1]
+            const bkid = match[2]
+            const cmd = match[3]
+            const id = match[4]
+            const mediaPath = match[5]
+            const path = ['./backups/', bkid, '/', data]
+            if (cmd) {
+              if (id) {
+                path.push('/', id, '.json')
+              } else {
+                path.push('/', unescape(mediaPath))
+              }
+            } else {
+              path.push('.json')
+            }
+            const cachePath = join(cacheBasePath, path.join(''))
+            const cacheFolder = dirname(cachePath)
+            await mkdirAsync(cacheFolder, { recursive : true })
+            const cached = createWriteStream(cachePath)
+            capture(response, cached)
+              .then(() => {
+                if (cachePath.endsWith('.json')) {
+                  return readFileAsync(cachePath)
+                    .then(async buffer => {
+                      const json = JSON.parse(buffer.toString())
+                      return writeFileAsync(cachePath, JSON.stringify(json, undefined, 2))
+                    })
+                }
+              })
+            return
+          }
+        }
+        if (request.method === 'GET' && /\.(js|css|svg|jpe?g)(?:\?_=\d+)?$/.exec(request.url)) {
+          const cleanedPath = clean(path)
+          const cachePath = join(cacheBasePath, '.' + cleanedPath)
+          try {
+            const fileStat = await statAsync(cachePath)
+            if (fileStat) {
+              return `local:${cleanedPath}`
+            }
+          } catch (e) {
+            // ignore
+          }
+          const cacheFolder = dirname(cachePath)
+          await mkdirAsync(cacheFolder, { recursive : true })
+          const cached = createWriteStream(cachePath)
+          capture(response, cached)
+          return
         }
       }
     }, {
       match: /^(http:\/\/.*)/,
       url: '$1'
     }]
-  }), false)
-
+  }), process.argv.includes('--verbose'))
 }
 
 main()
