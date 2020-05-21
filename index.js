@@ -5,8 +5,6 @@ const { createWriteStream, mkdir, readdir, readFile, writeFile, stat } = require
 const { dirname, join } = require('path')
 const { promisify } = require('util')
 const { capture, log, serve } = require('reserve')
-const zlib = require('zlib')
-const { pipeline } = require('stream')
 
 const mkdirAsync = promisify(mkdir)
 const readdirAsync = promisify(readdir)
@@ -27,6 +25,18 @@ function clean (path) {
     path = path.split('?_=')[0]
   }
   return path
+}
+
+async function fileExists (path) {
+  try {
+    const fileStat = await statAsync(path)
+    if (fileStat && fileStat.isFile()) {
+      return true
+    }
+  } catch (e) {
+    // ignore
+  }
+  return false
 }
 
 async function main () {
@@ -75,17 +85,18 @@ async function main () {
               path.push('.json')
             }
             const cachePath = join(cacheBasePath, path.join(''))
+            if (await fileExists(cachePath)) {
+              return // Prevents overwrite
+            }
             const cacheFolder = dirname(cachePath)
             await mkdirAsync(cacheFolder, { recursive : true })
             const cached = createWriteStream(cachePath)
             capture(response, cached)
-              .then(() => {
+              .then(async () => {
                 if (cachePath.endsWith('.json')) {
-                  return readFileAsync(cachePath)
-                    .then(async buffer => {
-                      const json = JSON.parse(buffer.toString())
-                      return writeFileAsync(cachePath, JSON.stringify(json, undefined, 2))
-                    })
+                  const buffer = await readFileAsync(cachePath)
+                  const json = JSON.parse(buffer.toString())
+                  await writeFileAsync(cachePath, JSON.stringify(json, undefined, 2))
                 }
               })
             return
@@ -94,13 +105,8 @@ async function main () {
         if (request.method === 'GET' && /\.(js|css|svg|jpe?g)(?:\?_=\d+)?$/.exec(request.url)) {
           const cleanedPath = clean(path)
           const cachePath = join(cacheBasePath, '.' + cleanedPath)
-          try {
-            const fileStat = await statAsync(cachePath)
-            if (fileStat) {
-              return `local:${cleanedPath}`
-            }
-          } catch (e) {
-            // ignore
+          if (await fileExists(cachePath)) {
+            return `local:${cleanedPath}`
           }
           const cacheFolder = dirname(cachePath)
           await mkdirAsync(cacheFolder, { recursive : true })
