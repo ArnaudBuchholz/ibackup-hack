@@ -1,10 +1,11 @@
 'use strict'
 
 require('colors')
-const { mkdir, readFile, stat, writeFile } = require('fs')
+const { copyFile, mkdir, readFile, stat, writeFile } = require('fs')
 const { extname, join } = require('path')
 const { promisify } = require('util')
 
+const copyFileAsync = promisify(copyFile)
 const mkdirAsync = promisify(mkdir)
 const readFileAsync = promisify(readFile)
 const statAsync = promisify(stat)
@@ -53,12 +54,17 @@ async function main () {
             const note = JSON.parse((await readFileAsync(notePath)).toString())
             const markdown = []
             let numbered = 0
+            let imageIndex = 0
             for await (const item of note.content) {
               if (item.type === 'image') {
-                if (!await fileExists(join(basePath, 'backup', item.path))) {
+                const imageSource = join(basePath, 'backup', item.path)
+                if (!await fileExists(imageSource)) {
                   throw new Error(`missing image ${item.path}`)
                 }
-                markdown.push(`![${index.recid}](${index.recid}${extname(item.path)})\n\n`)
+                ++imageIndex
+                const imageName = `${index.recid}_${imageIndex}${extname(item.path)}`
+                await copyFileAsync(imageSource, join(outBasePath, imageName))
+                markdown.push(`![${index.recid}](${imageName})\n\n`)
               } else if (item.type === 'attributed') {
                 let prefix = ''
                 let suffix = ''
