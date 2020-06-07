@@ -25,9 +25,17 @@ async function fileExists (path) {
 
 async function main () {
   const bkid = process.argv[2]
+  if (bkid === undefined) {
+    console.error('Specify backup id'.red);
+    return
+  }
+
+  const partId = process.argv[3]
+
   console.log('Checking backup'.yellow, bkid.green)
   let notesCount = 0
   let notesInError = {}
+  let notesSaved = 0
 
   const basePath = join(__dirname, 'cache/backups', bkid)
   const outBasePath = join(basePath, 'output')
@@ -35,21 +43,29 @@ async function main () {
   console.log('Loading notes index...'.gray)
   const notes = JSON.parse((await readFileAsync(join(basePath, 'notes.json'))).toString())
   for await (const part of notes) {
-    console.log('*'.gray, part.name)
+    console.log('*'.gray, part.recid.toString().padStart(5, ' ').yellow, part.name)
+    const save = part.recid.toString() === partId
     for await (const folder of part.folders) {
       let folderNotes
       if (folder.count) {
         try {
           folderNotes = JSON.parse((await readFileAsync(join(basePath, `notes/${folder.recid}.json`))).toString())
         } catch (e) {
-          console.log(' *'.gray, folder.name, folder.count.toString().red, 'no index'.red)
+          console.log(' *'.gray, folder.recid.toString().padStart(5, ' ').yellow, folder.name, folder.count.toString().red, 'no index'.red)
           continue
         }
       }
-      console.log(' *'.gray, folder.name, folder.count.toString().green)
-      if (folder.count) {
+      console.log(' *'.gray, folder.recid.toString().padStart(5, ' ').yellow, folder.name, folder.count.toString().green)
+      if (save && folder.count) {
         for await (const index of folderNotes) {
           let notePath = join(basePath, `notes/${index.recid}.json`)
+          const infos = {}
+          if (index.title.startsWith('👍🏼')) {
+            infos.title = index.title.replace('👍🏼', '')
+            infos.rating = 5
+          } else {
+            infos.title = index.title
+          }
           try {
             const note = JSON.parse((await readFileAsync(notePath)).toString())
             const markdown = []
@@ -63,7 +79,12 @@ async function main () {
                 }
                 ++imageIndex
                 const imageName = `${index.recid}_${imageIndex}${extname(item.path)}`
-                await copyFileAsync(imageSource, join(outBasePath, imageName))
+                if (save) {
+                  await copyFileAsync(imageSource, join(outBasePath, imageName))
+                }
+                if (!infos.preview) {
+                  infos.preview = imageName
+                }
                 markdown.push(`![${index.recid}](${imageName})\n\n`)
               } else if (item.type === 'attributed') {
                 let prefix = ''
@@ -95,13 +116,27 @@ async function main () {
                 throw new Error(`unknown item type ${item.type}`)
               }
             }
-            await writeFileAsync(join(outBasePath, `${index.recid}.md`), markdown.join(''))
+            const finalMarkdown = markdown.join('')
+            const serving = /(\d+) portions/i.exec(finalMarkdown) || /portions : (\d+)/i.exec(finalMarkdown)
+            if (serving) {
+              infos.serving = parseInt(serving[1], 10)
+            }
+            const duration = /Préparation : (\d+) ?min(?:utes)?/.exec(finalMarkdown)
+            if (duration) {
+              infos.duration = parseInt(duration[1], 10)
+            }
+            if (save) {
+              await writeFileAsync(join(outBasePath, `${index.recid}.md`), finalMarkdown)
+              await writeFileAsync(join(outBasePath, `${index.recid}.json`), JSON.stringify(infos))
+              ++notesSaved
+            }
           } catch (e) {
-            console.log('  *'.gray, index.title, index.summary.gray, e.toString().red)
+            console.log('  *'.gray, index.recid.toString().padStart(5, ' ').yellow, index.title, e.toString().red)
             notesInError[notePath] = e
             continue
           }
-          console.log('  *'.gray, index.title, index.summary.gray)
+          console.log('  *'.gray, index.recid.toString().padStart(5, ' ').yellow, index.title)
+          // console.log(infos)
           ++notesCount
         }
       }
@@ -109,6 +144,9 @@ async function main () {
   }
 
   console.log('Notes found: '.yellow, notesCount.toString().green)
+  if (notesSaved) {
+    console.log('Notes saved: '.yellow, notesSaved.toString().green)
+  }
   const errorCount = Object.keys(notesInError).length
   if (errorCount) {
     console.error('Invalid notes : '.red, errorCount.toString().red)
